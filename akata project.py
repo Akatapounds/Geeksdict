@@ -130,7 +130,7 @@ class DictionaryApp(customtkinter.CTk):
 
 
     def speak_definition(self):
-        """Convert definition text to speech using pygame"""
+        """Convert definition text to speech using pygame..."""
         text_to_speak = self.definition_text.get("1.0", "end-1c").strip()
         
         if not text_to_speak:
