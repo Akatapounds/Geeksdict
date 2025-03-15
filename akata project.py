@@ -19,7 +19,8 @@ customtkinter.set_default_color_theme("blue")
 History_Button_Image = customtkinter.CTkImage(Image.open('images/history.png'), size=(30, 30))
 Micro_Button_Image = customtkinter.CTkImage(Image.open('images/micro.png'), size=(30, 30))
 Logo_Image = customtkinter.CTkImage(Image.open('images/updated logo.png'), size=(200, 200))
-Speaker_Button_Image = customtkinter.CTkImage(Image.open('images/speaker.png'), size=(30, 30))
+Play_button = customtkinter.CTkImage(Image.open('images/Play.png'), size=(30, 30))
+Pause_button = customtkinter.CTkImage(Image.open('images/pause.png'), size=(30, 30))
 
 class DictionaryApp(customtkinter.CTk):
     def __init__(self):
@@ -84,18 +85,37 @@ class DictionaryApp(customtkinter.CTk):
 
         self.speak_button = customtkinter.CTkButton(
             self,
-            text="Play",
-            image=Speaker_Button_Image,
+            text="",
+            image=Play_button,
             fg_color="#086b78",
             hover_color="#C850C0",
             border_width=2,
-            width=15,
-            height=15,
+            width=5,
+            height=5,
             border_color='#FFCC70',
-            corner_radius=30,
+            corner_radius=50,
             command=self.speak_definition
         )
         self.speak_button.place(x=0, y=320)
+
+
+        
+        self.Pause_button = customtkinter.CTkButton(
+            self,
+            text="",
+            image=Pause_button,
+            fg_color="#086b78",
+            hover_color="#C850C0",
+            border_width=2,
+            width=5,
+            height=5,
+            border_color='#FFCC70',
+            corner_radius=50,
+        
+        )
+        self.Pause_button.place(x=50, y=320)
+
+        
 
         self.definition_text = customtkinter.CTkTextbox(
             self.results_frame,
