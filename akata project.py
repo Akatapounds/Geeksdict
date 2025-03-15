@@ -118,6 +118,10 @@ class DictionaryApp(customtkinter.CTk):
             return
 
         try:
+            # Initialize pygame mixer if not already initialized
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+                
             # Stop any existing audio
             pygame.mixer.music.stop()
             
