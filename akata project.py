@@ -27,7 +27,7 @@ class DictionaryApp(customtkinter.CTk):
         super().__init__()
         self.title("GEEK DICTIONARY")
         self.geometry("400x600")
-        self.resizable(True, True)
+        self.resizable(False, False)
         self.configure_layout()
         self.setup_database()
         self.create_widgets()

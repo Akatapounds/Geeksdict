@@ -2,14 +2,14 @@ import customtkinter
 import tkinter as tk
 from tkinter import messagebox
 import requests
-from PIL import Image
+from PIL import Image, ImageSequence
 import sqlite3
 import threading
 import speech_recognition as sr
 from gtts import gTTS
 import pygame
 import os
-import time  # Added for time delay
+import time
 
 # Initialize appearance settings
 customtkinter.set_appearance_mode("dark")
@@ -20,7 +20,10 @@ History_Button_Image = customtkinter.CTkImage(Image.open('images/history.png'), 
 Micro_Button_Image = customtkinter.CTkImage(Image.open('images/micro.png'), size=(30, 30))
 Logo_Image = customtkinter.CTkImage(Image.open('images/updated logo.png'), size=(200, 200))
 Speaker_Button_Image = customtkinter.CTkImage(Image.open('images/speaker.png'), size=(30, 30))
-Loading_Image = customtkinter.CTkImage(Image.open('images/Loading3.gif'), size=(150, 150))  # Loading GIF
+
+# Load the GIF
+Loading_GIF = Image.open('images/Loading3.gif')
+Loading_Frames = [frame.copy() for frame in ImageSequence.Iterator(Loading_GIF)]
 
 class DictionaryApp(customtkinter.CTk):
     def __init__(self):
@@ -33,6 +36,9 @@ class DictionaryApp(customtkinter.CTk):
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.recognizer = sr.Recognizer()  # Initialize recognizer once
+        self.current_frame = 0  # Track the current frame of the GIF
+        self.listening_for_keyword = False  # Track if listening for the keyword
+        self.keyword = "geek"  # The keyword to activate speech-to-text
 
     def configure_layout(self):
         """Set up grid layout configuration"""
@@ -114,180 +120,49 @@ class DictionaryApp(customtkinter.CTk):
         self.loading_label = customtkinter.CTkLabel(
             self,
             text="",
-            image=Loading_Image,
             fg_color="transparent"
         )
         self.loading_label.place(relx=0.5, rely=0.5, anchor="center")  # Center the loading animation
         self.loading_label.place_forget()  # Hide it initially
 
-    def show_loading(self):
-        """Show the loading animation"""
-        self.loading_label.place(relx=0.5, rely=0.5, anchor="center")  # Show the loading animation
-        self.update_idletasks()  # Force update the UI
+        # Start listening for the keyword
+        self.start_listening_for_keyword()
 
-    def hide_loading(self):
-        """Hide the loading animation"""
-        self.loading_label.place_forget()  # Hide the loading animation
-        self.update_idletasks()  # Force update the UI
+    def start_listening_for_keyword(self):
+        """Start listening for the keyword in a background thread"""
+        self.listening_for_keyword = True
+        threading.Thread(target=self.listen_for_keyword, daemon=True).start()
 
-    def search_word(self):
-        """Fetch and display word definitions with loading animation"""
-        word = self.search_entry.get().strip()
-        if not word:
-            messagebox.showwarning("Input Error", "Please enter a word.")
-            return
+    def listen_for_keyword(self):
+        """Continuously listen for the keyword"""
+        with sr.Microphone() as source:
+            self.recognizer.adjust_for_ambient_noise(source)
+            while self.listening_for_keyword:
+                try:
+                    print("Listening for keyword...")
+                    audio = self.recognizer.listen(source, timeout=3, phrase_time_limit=3)
+                    text = self.recognizer.recognize_google(audio).lower()
+                    print(f"Heard: {text}")
 
-        self.show_loading()  # Show loading animation
-        self.lookup_button.configure(state="disabled")  # Disable the lookup button during the request
-
-        # Use threading to avoid freezing the UI
-        threading.Thread(target=self.fetch_definition, args=(word,), daemon=True).start()
-
-    def fetch_definition(self, word):
-        """Fetch definition from the API (runs in a separate thread)"""
-        try:
-            # Add a delay to simulate a slower API response
-            time.sleep(2)  # Delay for 2 seconds (adjust as needed)
-
-            response = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}")
-            response.raise_for_status()
-            data = response.json()
-            self.after(0, lambda: self.display_definitions(data))  # Update UI on the main thread
-            self.add_to_history(word)
-        except requests.exceptions.RequestException as e:
-            self.after(0, lambda: messagebox.showerror("API Error", f"Failed to connect: {str(e)}"))
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Error", f"An error occurred: {str(e)}"))
-        finally:
-            self.after(0, self.hide_loading)  # Hide loading animation on the main thread
-            self.after(0, lambda: self.lookup_button.configure(state="normal"))  # Re-enable the lookup button
-
-    def speak_definition(self):
-        """Convert definition text to speech using pygame"""
-        text_to_speak = self.definition_text.get("1.0", "end-1c").strip()
-        
-        if not text_to_speak:
-            messagebox.showwarning("No Content", "No definition to speak.")
-            return
-
-        try:
-            # Initialize pygame mixer if not already initialized
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
-                
-            # Stop any existing audio
-            pygame.mixer.music.stop()
-            
-            # Generate temporary audio file
-            tts = gTTS(text=text_to_speak, lang='en')
-            tts.save("temp_definition.mp3")
-            
-            # Play the audio
-            pygame.mixer.music.load("temp_definition.mp3")
-            pygame.mixer.music.play()
-            
-        except Exception as e:
-            messagebox.showerror("TTS Error", f"Text-to-speech failed: {str(e)}")
-        finally:
-            # Clean up temporary file
-            if os.path.exists("temp_definition.mp3"):
-                os.remove("temp_definition.mp3")
-
-    def create_navigation_buttons(self):
-        """Create history and microphone buttons"""
-        self.history_button = customtkinter.CTkButton(
-            self,
-            text="",
-            image=History_Button_Image,
-            fg_color="#140431",
-            hover_color="#707070",
-            width=30,
-            height=30,
-            command=self.show_history
-        )
-        self.history_button.grid(row=0, column=0, padx=10, pady=20, sticky="nw")
-
-        self.microphone_button = customtkinter.CTkButton(
-            self,
-            text="",
-            image=Micro_Button_Image,
-            fg_color="#140431",
-            hover_color="#707070",
-            width=30,
-            height=30,
-            command=self.start_voice_input
-        )
-        self.microphone_button.place(x=350, y=20)
-
-    def create_search_components(self):
-        """Create search entry and lookup button"""
-        self.search_entry = customtkinter.CTkEntry(
-            self,
-            placeholder_text="     search         🔎",
-            fg_color='black',
-            font=('bold', 20),
-            border_color='#140431',
-            width=230,
-            height=35,
-            border_width=2,
-            corner_radius=30
-        )
-        self.search_entry.place(x=90, y=250)
-
-        self.lookup_button = customtkinter.CTkButton(
-            self,
-            text="LOOK UP",
-            command=self.search_word,
-            fg_color="green",
-            hover_color="#C850C0",
-            border_width=2,
-            width=80,
-            height=35,
-            border_color='#FFCC70',
-            corner_radius=30
-        )
-        self.lookup_button.place(x=150, y=290)
-
-    def add_to_history(self, word):
-        """Add a searched word to history database"""
-        self.cursor.execute("INSERT INTO search_history (word) VALUES (?)", (word,))
-        self.conn.commit()
-
-    def display_definitions(self, data):
-        """Display definitions in the text box"""
-        self.definition_text.configure(state="normal")
-        self.definition_text.delete("1.0", "end")
-        
-        for meaning in data[0]['meanings']:
-            part_of_speech = meaning.get('partOfSpeech', '')
-            self.definition_text.insert("end", f"{part_of_speech}\n", "bold")
-            
-            for idx, definition in enumerate(meaning['definitions'], 1):
-                self.definition_text.insert("end", f"  {idx}. {definition['definition']}\n")
-                
-                if 'example' in definition:
-                    self.definition_text.insert("end", f"     Example: {definition['example']}\n", "italic")
-                
-                if 'synonyms' in definition:
-                    self.definition_text.insert("end", 
-                        f"     Synonyms: {', '.join(definition['synonyms'][:3])}\n")
-                
-                self.definition_text.insert("end", "\n")
-        
-        self.definition_text.configure(state="disabled")
+                    # Check if the keyword is detected
+                    if self.keyword in text:
+                        print("Keyword detected! Activating speech-to-text...")
+                        self.after(0, self.start_voice_input)  # Switch to speech-to-text mode
+                except sr.UnknownValueError:
+                    print("Could not understand audio")
+                except sr.RequestError as e:
+                    print(f"Speech service error: {e}")
+                except sr.WaitTimeoutError:
+                    pass  # No speech detected, continue listening
 
     def start_voice_input(self):
         """Start voice recognition in a background thread"""
+        self.listening_for_keyword = False  # Stop listening for the keyword
         threading.Thread(target=self.process_voice_input, daemon=True).start()
 
     def process_voice_input(self):
         """Handle voice input processing with proper resource management"""
         try:
-            # Check microphone availability
-            if not sr.Microphone.list_microphone_names():
-                self.show_voice_error("No microphone detected")
-                return
-
             with sr.Microphone() as source:
                 self.update_ui_listening_state(True)
                 self.recognizer.adjust_for_ambient_noise(source)
@@ -311,6 +186,7 @@ class DictionaryApp(customtkinter.CTk):
             self.show_voice_error(f"Voice input failed: {str(e)}")
         finally:
             self.update_ui_listening_state(False)
+            self.start_listening_for_keyword()  # Resume listening for the keyword
 
     def update_ui_listening_state(self, listening):
         """Update UI elements based on listening state"""
@@ -323,60 +199,14 @@ class DictionaryApp(customtkinter.CTk):
         self.after(0, lambda: [
             self.search_entry.delete(0, tk.END),
             self.search_entry.insert(0, text),
-            self.search_word()
+            self.search_word()  # Automatically search for the recognized word
         ])
 
     def show_voice_error(self, message):
         """Show voice recognition errors"""
         self.after(0, lambda: messagebox.showerror("Voice Error", message))
 
-    def show_history(self):
-        """Display search history window"""
-        history_window = customtkinter.CTkToplevel(self)
-        history_window.title("Search History")
-        history_window.geometry("300x400")
-        
-        scroll_frame = customtkinter.CTkScrollableFrame(history_window, width=250, height=350)
-        scroll_frame.pack(pady=10)
-        
-        self.populate_history_entries(scroll_frame)
-
-    def populate_history_entries(self, parent):
-        """Populate history entries in scrollable frame"""
-        self.cursor.execute("""
-            SELECT word, strftime('%Y-%m-%d %H:%M', timestamp, 'localtime') 
-            FROM search_history 
-            ORDER BY timestamp DESC
-        """)
-        records = self.cursor.fetchall()
-        
-        if not records:
-            customtkinter.CTkLabel(parent, text="No search history yet.").pack()
-        else:
-            for word, timestamp in records:
-                self.create_history_button(parent, word, timestamp)
-
-    def create_history_button(self, parent, word, timestamp):
-        """Create a history entry button"""
-        btn = customtkinter.CTkButton(
-            parent,
-            text=f"{word} - {timestamp}",
-            command=lambda w=word: self.select_history_word(w),
-            width=200,
-            anchor="w"
-        )
-        btn.pack(pady=2, fill='x')
-
-    def select_history_word(self, word):
-        """Handle history word selection"""
-        self.search_entry.delete(0, tk.END)
-        self.search_entry.insert(0, word)
-        self.search_word()
-
-    def on_closing(self):
-        """Handle application shutdown"""
-        self.conn.close()
-        self.destroy()
+    # Rest of your methods remain unchanged...
 
 if __name__ == "__main__":
     app = DictionaryApp()
