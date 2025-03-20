@@ -9,7 +9,6 @@ import speech_recognition as sr
 from gtts import gTTS
 import pygame
 import os
- 
 
 # Initialize appearance settings
 customtkinter.set_appearance_mode("dark")
@@ -19,8 +18,8 @@ customtkinter.set_default_color_theme("blue")
 History_Button_Image = customtkinter.CTkImage(Image.open('images/history.png'), size=(30, 30))
 Micro_Button_Image = customtkinter.CTkImage(Image.open('images/micro.png'), size=(30, 30))
 Logo_Image = customtkinter.CTkImage(Image.open('images/updated logo.png'), size=(200, 200))
-Play_button = customtkinter.CTkImage(Image.open('images/Play.png'), size=(30, 30))
-Pause_button = customtkinter.CTkImage(Image.open('images/pause.png'), size=(30, 30))
+Play_button = customtkinter.CTkImage(Image.open('images/play buttom.png'), size=(30, 30))
+# Pause_button = customtkinter.CTkImage(Image.open('images/pause.png'), size=(30, 30))
 
 class DictionaryApp(customtkinter.CTk):
     def __init__(self):
@@ -33,6 +32,8 @@ class DictionaryApp(customtkinter.CTk):
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.recognizer = sr.Recognizer()  # Initialize recognizer once
+        self.audio_state = "stopped"  # Possible states: "stopped", "playing", "paused"
+        self.history_window = None  # Add this line to track history window
 
     def configure_layout(self):
         """Set up grid layout configuration"""
@@ -82,41 +83,23 @@ class DictionaryApp(customtkinter.CTk):
         )
         self.results_frame.place(x=25, y=380)
 
-
+        # Play/Pause Button
         self.speak_button = customtkinter.CTkButton(
             self,
             text="",
             image=Play_button,
-            fg_color="#086b78",
-            hover_color="#C850C0",
+            fg_color="#140431",
+            hover_color="#707070",
             border_width=2,
             width=5,
             height=5,
-            border_color='#FFCC70',
-            corner_radius=50,
-            command=self.speak_definition
+            border_color='#140431',
+            # corner_radius=30,
+            command=self.toggle_audio
         )
-        self.speak_button.place(x=0, y=320)
+        self.speak_button.place(x=30, y=320)
 
-
-        
-        self.Pause_button = customtkinter.CTkButton(
-            self,
-            text="",
-            image=Pause_button,
-            fg_color="#086b78",
-            hover_color="#C850C0",
-            border_width=2,
-            width=5,
-            height=5,
-            border_color='#FFCC70',
-            corner_radius=50,
-        
-        )
-        self.Pause_button.place(x=50, y=320)
-
-        
-
+        # Definition Textbox
         self.definition_text = customtkinter.CTkTextbox(
             self.results_frame,
             fg_color="white",
@@ -128,6 +111,14 @@ class DictionaryApp(customtkinter.CTk):
         )
         self.definition_text.pack(padx=10, pady=10)
 
+    def toggle_audio(self):
+        """Toggle between play, pause, and resume actions"""
+        if self.audio_state == "stopped":
+            self.speak_definition()
+        elif self.audio_state == "playing":
+            self.pause_audio()
+        elif self.audio_state == "paused":
+            self.resume_audio()
 
     def speak_definition(self):
         """Convert definition text to speech using pygame..."""
@@ -152,6 +143,8 @@ class DictionaryApp(customtkinter.CTk):
             # Play the audio
             pygame.mixer.music.load("temp_definition.mp3")
             pygame.mixer.music.play()
+            self.audio_state = "playing"
+            self.speak_button.configure(image=Play_button)
             
         except Exception as e:
             messagebox.showerror("TTS Error", f"Text-to-speech failed: {str(e)}")
@@ -159,6 +152,20 @@ class DictionaryApp(customtkinter.CTk):
             # Clean up temporary file
             if os.path.exists("temp_definition.mp3"):
                 os.remove("temp_definition.mp3")
+
+    def pause_audio(self):
+        """Pause the currently playing audio"""
+        if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
+            pygame.mixer.music.pause()
+            self.audio_state = "paused"
+            self.speak_button.configure(image=Play_button)
+
+    def resume_audio(self):
+        """Resume the paused audio"""
+        if pygame.mixer.get_init() and not pygame.mixer.music.get_busy():
+            pygame.mixer.music.unpause()
+            self.audio_state = "playing"
+            self.speak_button.configure(image=Play_button)
 
     def create_navigation_buttons(self):
         """Create history and microphone buttons"""
@@ -315,11 +322,17 @@ class DictionaryApp(customtkinter.CTk):
         """Show voice recognition errors"""
         self.after(0, lambda: messagebox.showerror("Voice Error", message))
 
+
     def show_history(self):
+        if self.history_window is not None and self.history_window.winfo_exists():
+            self.history_window.lift()
+            self.history_window.focus_force()
+            return
+        
         """Display search history window"""
         history_window = customtkinter.CTkToplevel(self)
         history_window.title("Search History")
-        history_window.geometry("300x400")
+        history_window.geometry("400x450")
         
         scroll_frame = customtkinter.CTkScrollableFrame(history_window, width=250, height=350)
         scroll_frame.pack(pady=10)
@@ -354,6 +367,9 @@ class DictionaryApp(customtkinter.CTk):
 
     def select_history_word(self, word):
         """Handle history word selection"""
+        if self.history_window is not None:
+            self.history_window.destroy()
+            self.history_window = None
         self.search_entry.delete(0, tk.END)
         self.search_entry.insert(0, word)
         self.search_word()
