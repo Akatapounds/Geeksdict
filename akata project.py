@@ -9,6 +9,7 @@ import speech_recognition as sr
 from gtts import gTTS
 import pygame
 import os
+import time
 
 # Initialize appearance settings
 customtkinter.set_appearance_mode("dark")
@@ -19,7 +20,6 @@ History_Button_Image = customtkinter.CTkImage(Image.open('images/history.png'), 
 Micro_Button_Image = customtkinter.CTkImage(Image.open('images/micro.png'), size=(30, 30))
 Logo_Image = customtkinter.CTkImage(Image.open('images/updated logo.png'), size=(200, 200))
 Play_button = customtkinter.CTkImage(Image.open('images/play buttom.png'), size=(30, 30))
-# Pause_button = customtkinter.CTkImage(Image.open('images/pause.png'), size=(30, 30))
 
 class DictionaryApp(customtkinter.CTk):
     def __init__(self):
@@ -31,9 +31,10 @@ class DictionaryApp(customtkinter.CTk):
         self.setup_database()
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.recognizer = sr.Recognizer()  # Initialize recognizer once
-        self.audio_state = "stopped"  # Possible states: "stopped", "playing", "paused"
-        self.history_window = None  # Add this line to track history window
+        self.recognizer = sr.Recognizer()
+        self.audio_state = "stopped"
+        self.history_window = None
+        self.last_search_time = 0
 
     def configure_layout(self):
         """Set up grid layout configuration"""
@@ -41,17 +42,21 @@ class DictionaryApp(customtkinter.CTk):
         self.grid_columnconfigure(0, weight=1)
 
     def setup_database(self):
-        """Initialize SQLite database connection"""
-        self.conn = sqlite3.connect('history.db')
-        self.cursor = self.conn.cursor()
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS search_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                word TEXT NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        self.conn.commit()
+        """Initialize SQLite database connection with error handling"""
+        try:
+            self.conn = sqlite3.connect('history.db', check_same_thread=False)
+            self.cursor = self.conn.cursor()
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS search_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    word TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(word) ON CONFLICT REPLACE
+                )
+            ''')
+            self.conn.commit()
+        except sqlite3.Error as e:
+            messagebox.showerror("Database Error", f"Failed to initialize database: {str(e)}")
 
     def create_widgets(self):
         """Create and place all GUI components"""
@@ -94,7 +99,6 @@ class DictionaryApp(customtkinter.CTk):
             width=5,
             height=5,
             border_color='#140431',
-            # corner_radius=30,
             command=self.toggle_audio
         )
         self.speak_button.place(x=30, y=320)
@@ -121,7 +125,7 @@ class DictionaryApp(customtkinter.CTk):
             self.resume_audio()
 
     def speak_definition(self):
-        """Convert definition text to speech using pygame..."""
+        """Convert definition text to speech using pygame"""
         text_to_speak = self.definition_text.get("1.0", "end-1c").strip()
         
         if not text_to_speak:
@@ -129,29 +133,33 @@ class DictionaryApp(customtkinter.CTk):
             return
 
         try:
-            # Initialize pygame mixer if not already initialized
             if not pygame.mixer.get_init():
                 pygame.mixer.init()
                 
-            # Stop any existing audio
             pygame.mixer.music.stop()
             
-            # Generate temporary audio file
             tts = gTTS(text=text_to_speak, lang='en')
-            tts.save("temp_definition.mp3")
+            temp_file = f"temp_definition_{time.time()}.mp3"
+            tts.save(temp_file)
             
-            # Play the audio
-            pygame.mixer.music.load("temp_definition.mp3")
+            pygame.mixer.music.load(temp_file)
             pygame.mixer.music.play()
             self.audio_state = "playing"
             self.speak_button.configure(image=Play_button)
             
+            # Clean up after playback finishes
+            def check_playback():
+                if pygame.mixer.music.get_busy():
+                    self.after(100, check_playback)
+                else:
+                    self.audio_state = "stopped"
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+            
+            self.after(100, check_playback)
+            
         except Exception as e:
             messagebox.showerror("TTS Error", f"Text-to-speech failed: {str(e)}")
-        finally:
-            # Clean up temporary file
-            if os.path.exists("temp_definition.mp3"):
-                os.remove("temp_definition.mp3")
 
     def pause_audio(self):
         """Pause the currently playing audio"""
@@ -223,33 +231,53 @@ class DictionaryApp(customtkinter.CTk):
         self.lookup_button.place(x=150, y=290)
 
     def add_to_history(self, word):
-        """Add a searched word to history database"""
-        self.cursor.execute("INSERT INTO search_history (word) VALUES (?)", (word,))
-        self.conn.commit()
+        """Add a searched word to history database with error handling"""
+        if not word or time.time() - self.last_search_time < 2:
+            return  # Prevent duplicate rapid additions
+            
+        self.last_search_time = time.time()
+        
+        try:
+            self.cursor.execute("INSERT OR REPLACE INTO search_history (word) VALUES (?)", (word,))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            print(f"Database error adding to history: {e}")
+            try:
+                # Attempt to reconnect if connection was lost
+                self.conn = sqlite3.connect('history.db', check_same_thread=False)
+                self.cursor = self.conn.cursor()
+                self.cursor.execute("INSERT OR REPLACE INTO search_history (word) VALUES (?)", (word,))
+                self.conn.commit()
+            except sqlite3.Error as e2:
+                print(f"Failed to reconnect to database: {e2}")
 
     def search_word(self):
         """Fetch and display word definitions"""
-        word = self.search_entry.get().strip()
-        if not word:
+        self.word = self.search_entry.get().strip().capitalize()
+        
+        if not self.word:
             messagebox.showwarning("Input Error", "Please enter a word.")
             return
 
         try:
-            response = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}")
+            response = requests.get(f"https://api.dictionaryapi.dev/api/v2/entries/en/{self.word}")
             response.raise_for_status()
             self.display_definitions(response.json())
-            self.add_to_history(word)
+            self.add_to_history(self.word)
             
         except requests.exceptions.RequestException as e:
             messagebox.showerror("API Error", f"Failed to connect: {str(e)}")
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
+        self.search_entry.delete(0, tk.END)
+
     def display_definitions(self, data):
         """Display definitions in the text box"""
         self.definition_text.configure(state="normal")
         self.definition_text.delete("1.0", "end")
-        
+
+        self.definition_text.insert("end", f"{self.word}\n\n", "bold")
         for meaning in data[0]['meanings']:
             part_of_speech = meaning.get('partOfSpeech', '')
             self.definition_text.insert("end", f"{part_of_speech}\n", "bold")
@@ -275,7 +303,6 @@ class DictionaryApp(customtkinter.CTk):
     def process_voice_input(self):
         """Handle voice input processing with proper resource management"""
         try:
-            # Check microphone availability
             if not sr.Microphone.list_microphone_names():
                 self.show_voice_error("No microphone detected")
                 return
@@ -322,37 +349,53 @@ class DictionaryApp(customtkinter.CTk):
         """Show voice recognition errors"""
         self.after(0, lambda: messagebox.showerror("Voice Error", message))
 
-
     def show_history(self):
+        """Display search history window with improved database handling"""
         if self.history_window is not None and self.history_window.winfo_exists():
             self.history_window.lift()
             self.history_window.focus_force()
             return
-        
-        """Display search history window"""
-        history_window = customtkinter.CTkToplevel(self)
-        history_window.title("Search History")
-        history_window.geometry("400x450")
-        
-        scroll_frame = customtkinter.CTkScrollableFrame(history_window, width=250, height=350)
-        scroll_frame.pack(pady=10)
-        
-        self.populate_history_entries(scroll_frame)
+            
+        try:
+            history_window = customtkinter.CTkToplevel(self)
+            self.history_window = history_window
+            history_window.title("Search History")
+            history_window.geometry("400x450")
+            history_window.protocol("WM_DELETE_WINDOW", self.on_history_window_close)
+            
+            scroll_frame = customtkinter.CTkScrollableFrame(history_window, width=350, height=380)
+            scroll_frame.pack(pady=10)
+            
+            try:
+                self.cursor.execute("""
+                    SELECT word, strftime('%Y-%m-%d %H:%M', timestamp, 'localtime') 
+                    FROM search_history 
+                    ORDER BY timestamp DESC
+                    LIMIT 50
+                """)
+                records = self.cursor.fetchall()
+                
+                if not records:
+                    customtkinter.CTkLabel(scroll_frame, text="No search history yet.").pack()
+                else:
+                    for word, timestamp in records:
+                        self.create_history_button(scroll_frame, word, timestamp)
+            except sqlite3.Error as e:
+                messagebox.showerror("Database Error", f"Failed to load history: {str(e)}")
+                history_window.destroy()
+                self.history_window = None
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open history window: {str(e)}")
+            if 'history_window' in locals():
+                history_window.destroy()
+            self.history_window = None
 
-    def populate_history_entries(self, parent):
-        """Populate history entries in scrollable frame"""
-        self.cursor.execute("""
-            SELECT word, strftime('%Y-%m-%d %H:%M', timestamp, 'localtime') 
-            FROM search_history 
-            ORDER BY timestamp DESC
-        """)
-        records = self.cursor.fetchall()
-        
-        if not records:
-            customtkinter.CTkLabel(parent, text="No search history yet.").pack()
-        else:
-            for word, timestamp in records:
-                self.create_history_button(parent, word, timestamp)
+    def on_history_window_close(self):
+        """Reset history window tracking when closed"""
+        if self.history_window is not None:
+            self.history_window.destroy()
+            self.history_window = None
 
     def create_history_button(self, parent, word, timestamp):
         """Create a history entry button"""
@@ -360,10 +403,12 @@ class DictionaryApp(customtkinter.CTk):
             parent,
             text=f"{word} - {timestamp}",
             command=lambda w=word: self.select_history_word(w),
-            width=200,
-            anchor="w"
+            width=320,
+            anchor="w",
+            fg_color="#1b0c43",
+            hover_color="#2a1a5e"
         )
-        btn.pack(pady=2, fill='x')
+        btn.pack(pady=2, padx=10, fill='x')
 
     def select_history_word(self, word):
         """Handle history word selection"""
@@ -376,7 +421,11 @@ class DictionaryApp(customtkinter.CTk):
 
     def on_closing(self):
         """Handle application shutdown"""
-        self.conn.close()
+        try:
+            if hasattr(self, 'conn'):
+                self.conn.close()
+        except:
+            pass
         self.destroy()
 
 if __name__ == "__main__":
