@@ -10,6 +10,8 @@ from gtts import gTTS
 import pygame
 import os
 import time
+import io
+import pyttsx3
 
 # Initialize appearance settings
 customtkinter.set_appearance_mode("dark")
@@ -20,6 +22,7 @@ History_Button_Image = customtkinter.CTkImage(Image.open('images/history.png'), 
 Micro_Button_Image = customtkinter.CTkImage(Image.open('images/micro.png'), size=(30, 30))
 Logo_Image = customtkinter.CTkImage(Image.open('images/updated logo.png'), size=(200, 200))
 Play_button = customtkinter.CTkImage(Image.open('images/play buttom.png'), size=(30, 30))
+DeleteIcon = customtkinter.CTkImage(Image.open('images/delete_icon.png'), size=(20, 20))
 
 class DictionaryApp(customtkinter.CTk):
     def __init__(self):
@@ -32,9 +35,35 @@ class DictionaryApp(customtkinter.CTk):
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.recognizer = sr.Recognizer()
-        self.audio_state = "stopped"
+        self.audio_state = "stopped"  # Can be: stopped, processing, playing, paused
         self.history_window = None
         self.last_search_time = 0
+        
+        # Initialize audio system
+        self.audio_engine = self.init_pyttsx3()
+        pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+        self.audio_buffer = {}
+        self.buffer_size = 5  # Number of audio clips to keep in memory
+
+    def init_pyttsx3(self):
+        """Initialize pyttsx3 with optimal settings"""
+        try:
+            engine = pyttsx3.init()
+            # Configure voice settings
+            voices = engine.getProperty('voices')
+            for voice in voices:
+                if "female" in voice.name.lower():
+                    engine.setProperty('voice', voice.id)
+                    break
+            engine.setProperty('rate', 160)
+            engine.setProperty('volume', 0.95)
+            # Warm up the engine
+            engine.say('')
+            engine.runAndWait()
+            return engine
+        except Exception as e:
+            print(f"pyttsx3 initialization failed: {e}")
+            return None
 
     def configure_layout(self):
         """Set up grid layout configuration"""
@@ -117,7 +146,10 @@ class DictionaryApp(customtkinter.CTk):
 
     def toggle_audio(self):
         """Toggle between play, pause, and resume actions"""
-        if self.audio_state == "stopped":
+        if self.audio_state == "processing":
+            messagebox.showinfo("Processing", "Audio is being processed, please wait")
+            return
+        elif self.audio_state == "stopped":
             self.speak_definition()
         elif self.audio_state == "playing":
             self.pause_audio()
@@ -125,41 +157,75 @@ class DictionaryApp(customtkinter.CTk):
             self.resume_audio()
 
     def speak_definition(self):
-        """Convert definition text to speech using pygame"""
+        """Convert definition text to speech using hybrid approach"""
         text_to_speak = self.definition_text.get("1.0", "end-1c").strip()
         
         if not text_to_speak:
             messagebox.showwarning("No Content", "No definition to speak.")
             return
 
-        try:
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
-                
-            pygame.mixer.music.stop()
-            
-            tts = gTTS(text=text_to_speak, lang='en')
-            temp_file = f"temp_definition_{time.time()}.mp3"
-            tts.save(temp_file)
-            
-            pygame.mixer.music.load(temp_file)
-            pygame.mixer.music.play()
-            self.audio_state = "playing"
-            self.speak_button.configure(image=Play_button)
-            
-            # Clean up after playback finishes
-            def check_playback():
-                if pygame.mixer.music.get_busy():
-                    self.after(100, check_playback)
+        if self.audio_state == "processing":
+            messagebox.showinfo("Processing", "Audio is being generated, please wait")
+            return
+
+        self.audio_state = "processing"
+        self.speak_button.configure(state="disabled")
+        
+        def _generate_and_play():
+            try:
+                # Try to use cached audio first
+                if text_to_speak in self.audio_buffer:
+                    audio_file = self.audio_buffer[text_to_speak]
+                    audio_file.seek(0)
                 else:
-                    self.audio_state = "stopped"
-                    if os.path.exists(temp_file):
+                    # Generate new audio
+                    audio_file = io.BytesIO()
+                    
+                    # Try pyttsx3 first (offline)
+                    if self.audio_engine:
+                        temp_file = f"temp_tts_{time.time()}.wav"
+                        self.audio_engine.save_to_file(text_to_speak, temp_file)
+                        self.audio_engine.runAndWait()
+                        
+                        # Load the generated file into memory
+                        with open(temp_file, 'rb') as f:
+                            audio_file.write(f.read())
                         os.remove(temp_file)
-            
-            self.after(100, check_playback)
-            
-        except Exception as e:
-            messagebox.showerror("TTS Error", f"Text-to-speech failed: {str(e)}")
+                    else:
+                        # Fall back to gTTS (requires internet)
+                        try:
+                            requests.get("https://www.google.com", timeout=3)
+                            tts = gTTS(text=text_to_speak, lang='en')
+                            tts.write_to_fp(audio_file)
+                        except requests.ConnectionError:
+                            messagebox.showerror("Network Error", 
+                                "You need network access when offline TTS is unavailable")
+                            return
+                    
+                    audio_file.seek(0)
+                    
+                    # Cache the audio
+                    if len(self.audio_buffer) >= self.buffer_size:
+                        self.audio_buffer.pop(next(iter(self.audio_buffer)))
+                    self.audio_buffer[text_to_speak] = audio_file
+                
+                # Play with pygame
+                pygame.mixer.music.load(audio_file)
+                pygame.mixer.music.play()
+                
+                # Wait for playback to finish
+                while pygame.mixer.music.get_busy() and self.audio_state == "playing":
+                    time.sleep(0.1)
+                
+            except Exception as e:
+                messagebox.showerror("Audio Error", f"Failed to generate speech: {str(e)}")
+            finally:
+                self.audio_state = "stopped"
+                self.after(0, lambda: self.speak_button.configure(state="normal"))
+
+        # Run in separate thread
+        threading.Thread(target=_generate_and_play, daemon=True).start()
+        self.audio_state = "playing"
 
     def pause_audio(self):
         """Pause the currently playing audio"""
@@ -360,11 +426,16 @@ class DictionaryApp(customtkinter.CTk):
             history_window = customtkinter.CTkToplevel(self)
             self.history_window = history_window
             history_window.title("Search History")
-            history_window.geometry("400x450")
+            history_window.geometry("400x500")  # Increased height to accommodate button
             history_window.protocol("WM_DELETE_WINDOW", self.on_history_window_close)
             
-            scroll_frame = customtkinter.CTkScrollableFrame(history_window, width=350, height=380)
-            scroll_frame.pack(pady=10)
+            # Main container frame
+            container = customtkinter.CTkFrame(history_window)
+            container.pack(fill="both", expand=True, padx=10, pady=10)
+            
+            # Scrollable frame for history items
+            scroll_frame = customtkinter.CTkScrollableFrame(container, width=350, height=380)
+            scroll_frame.pack(fill="both", expand=True)
             
             try:
                 self.cursor.execute("""
@@ -380,6 +451,18 @@ class DictionaryApp(customtkinter.CTk):
                 else:
                     for word, timestamp in records:
                         self.create_history_button(scroll_frame, word, timestamp)
+                    
+                # Add Clear History button at the bottom
+                clear_button = customtkinter.CTkButton(
+                    container,
+                    text="Clear History",
+                    image=DeleteIcon,
+                    fg_color="#FF5555",
+                    hover_color="#FF3333",
+                    command=self.confirm_clear_history
+                )
+                clear_button.pack(pady=10)
+                
             except sqlite3.Error as e:
                 messagebox.showerror("Database Error", f"Failed to load history: {str(e)}")
                 history_window.destroy()
@@ -390,6 +473,30 @@ class DictionaryApp(customtkinter.CTk):
             if 'history_window' in locals():
                 history_window.destroy()
             self.history_window = None
+
+    def confirm_clear_history(self):
+        """Show confirmation dialog before clearing history"""
+        if self.history_window is None:
+            return
+            
+        response = messagebox.askyesno(
+            "Clear History",
+            "Are you sure you want to clear all search history?",
+            parent=self.history_window
+        )
+        if response:
+            self.clear_history()
+            self.history_window.destroy()
+            self.show_history()  # Refresh the history window
+
+    def clear_history(self):
+        """Clear all search history from the database"""
+        try:
+            self.cursor.execute("DELETE FROM search_history")
+            self.conn.commit()
+            messagebox.showinfo("Success", "Search history cleared successfully.")
+        except sqlite3.Error as e:
+            messagebox.showerror("Database Error", f"Failed to clear history: {str(e)}")
 
     def on_history_window_close(self):
         """Reset history window tracking when closed"""
@@ -422,11 +529,22 @@ class DictionaryApp(customtkinter.CTk):
     def on_closing(self):
         """Handle application shutdown"""
         try:
+            # Clean up audio resources
+            if pygame.mixer.get_init():
+                pygame.mixer.music.stop()
+                pygame.mixer.quit()
+            
+            # Clear audio cache
+            for audio_file in self.audio_buffer.values():
+                audio_file.close()
+            self.audio_buffer.clear()
+            
             if hasattr(self, 'conn'):
                 self.conn.close()
-        except:
-            pass
-        self.destroy()
+        except Exception as e:
+            print(f"Error during shutdown: {e}")
+        finally:
+            self.destroy()
 
 if __name__ == "__main__":
     app = DictionaryApp()
